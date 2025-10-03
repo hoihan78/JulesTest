@@ -8,11 +8,11 @@ plugins {
 }
 
 android {
-    namespace = "fastcampus.part2.chapter1"
+    namespace = "fastcampus.part2.myapplication"
     compileSdk = 34
 
     defaultConfig {
-        applicationId = "fastcampus.part2.chapter1"
+        applicationId = "fastcampus.part2.myapplication"
         minSdk = 28
         targetSdk = 34
         versionCode = 1
@@ -39,7 +39,6 @@ android {
     }
     buildFeatures {
         compose = true
-        viewBinding = true
     }
 }
 
@@ -52,15 +51,18 @@ dependencies {
     implementation(libs.androidx.ui.graphics)
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
-    implementation(libs.androidx.constraintlayout)
     implementation(libs.material)
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.activity)
 
-    implementation(libs.androidx.room.runtime)
-    kapt(libs.androidx.room.compiler)
+    // Navigation
+    implementation(libs.androidx.navigation.compose)
 
-    implementation(libs.androidx.biometric)
+    // Gson
+    implementation(libs.gson)
+
+    // ViewModel
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
 
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
