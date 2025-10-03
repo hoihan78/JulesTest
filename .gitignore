@@ -1,0 +1,17 @@
+# IDE files
+/.idea/
+*.iml
+
+# Build files
+.gradle
+/build
+
+# Local configuration
+/local.properties
+local.properties
+
+# Other
+.DS_Store
+/captures
+.externalNativeBuild
+.cxx
