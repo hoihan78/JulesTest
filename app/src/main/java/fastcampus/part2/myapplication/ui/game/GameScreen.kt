@@ -21,35 +21,40 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shadow
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawBeeEnemy
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawBossEnemy
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawButterflyEnemy
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawEnemyBullet
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawExplosion
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawParticle
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawPlayerBullet
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawPlayerSpaceship
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawStar
+import kotlinx.coroutines.delay
 
-// 적 타입별 색상
-private fun getEnemyColor(type: EnemyType): Color {
-    return when (type) {
-        EnemyType.BEE -> Color(0xFFFF5555)        // 빨간색 (벌)
-        EnemyType.BUTTERFLY -> Color(0xFFFFEE00)  // 노란색 (나비)
-        EnemyType.BOSS -> Color(0xFF00FF88)       // 초록색 (보스)
-    }
-}
-
-// 적 타입별 크기
-private fun getEnemyRadius(type: EnemyType): Float {
-    return when (type) {
-        EnemyType.BEE -> 18f
-        EnemyType.BUTTERFLY -> 22f
-        EnemyType.BOSS -> 30f
-    }
-}
+// Neon text style for UI
+private val neonGreen = Color(0xFF39FF14)
+private val neonCyan = Color(0xFF00D9FF)
+private val neonRed = Color(0xFFFF5555)
+private val neonYellow = Color(0xFFFFEE00)
 
 @Composable
 fun GameScreen(
@@ -58,11 +63,31 @@ fun GameScreen(
     gameViewModel: GameViewModel = viewModel()
 ) {
     val gameState by gameViewModel.gameState.collectAsState()
+    val currentTime = remember { mutableLongStateOf(System.currentTimeMillis()) }
+    
+    // Update time for animations
+    LaunchedEffect(Unit) {
+        while (true) {
+            currentTime.longValue = System.currentTimeMillis()
+            delay(16)  // ~60 FPS
+        }
+    }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF0A0E27))  // 어두운 우주 배경
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF000000),  // Pure black at top
+                        Color(0xFF0A0E27),  // Dark navy
+                        Color(0xFF0D1B2A)   // Slightly lighter at bottom
+                    )
+                )
+            )
+            .onSizeChanged { size ->
+                gameViewModel.updateScreenSize(size.width.toFloat(), size.height.toFloat())
+            }
     ) {
         Canvas(modifier = Modifier
             .fillMaxSize()
@@ -73,51 +98,52 @@ fun GameScreen(
                 }
             }
         ) {
-            // 플레이어 그리기 (파란색 우주선)
-            drawCircle(
-                color = Color(0xFF00D9FF),
-                radius = 25f,
-                center = gameState.player.position
-            )
-
-            // 적군 그리기 (타입별 색상과 크기)
+            val time = currentTime.longValue
+            
+            // ===== Layer 1: Background Stars =====
+            gameState.stars.forEach { star ->
+                drawStar(star)
+            }
+            
+            // ===== Layer 2: Particles (behind entities) =====
+            gameState.particles.forEach { particle ->
+                drawParticle(particle, time)
+            }
+            
+            // ===== Layer 3: Player Bullets =====
+            gameState.bullets.forEach { bullet ->
+                drawPlayerBullet(bullet.position, time)
+            }
+            
+            // ===== Layer 4: Enemy Bullets =====
+            gameState.enemyBullets.forEach { bullet ->
+                drawEnemyBullet(bullet.position, time)
+            }
+            
+            // ===== Layer 5: Enemies =====
             gameState.enemies.forEach { enemy ->
-                drawCircle(
-                    color = getEnemyColor(enemy.type),
-                    radius = getEnemyRadius(enemy.type),
-                    center = enemy.position
-                )
-                // 보스는 추가 링 표시
-                if (enemy.type == EnemyType.BOSS) {
-                    drawCircle(
-                        color = Color.White.copy(alpha = 0.5f),
-                        radius = getEnemyRadius(enemy.type) + 5f,
-                        center = enemy.position,
-                        style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f)
-                    )
+                when (enemy.type) {
+                    EnemyType.BEE -> drawBeeEnemy(enemy.position, enemy.animationPhase)
+                    EnemyType.BUTTERFLY -> drawButterflyEnemy(enemy.position, enemy.animationPhase)
+                    EnemyType.BOSS -> drawBossEnemy(enemy.position, enemy.animationPhase, enemy.health)
                 }
             }
-
-            // 플레이어 총알 그리기 (노란색)
-            gameState.bullets.forEach { bullet ->
-                drawCircle(
-                    color = Color(0xFFFFEE00),
-                    radius = 8f,
-                    center = bullet.position
-                )
-            }
-
-            // 적군 총알 그리기 (주황색)
-            gameState.enemyBullets.forEach { bullet ->
-                drawCircle(
-                    color = Color(0xFFFF6B35),
-                    radius = 6f,
-                    center = bullet.position
-                )
+            
+            // ===== Layer 6: Player Spaceship =====
+            drawPlayerSpaceship(
+                position = gameState.player.position,
+                isInvincible = gameState.player.isInvincible,
+                time = time
+            )
+            
+            // ===== Layer 7: Explosions (on top) =====
+            gameState.explosions.forEach { explosion ->
+                drawExplosion(explosion, time)
             }
         }
 
-        // 상단 UI: 플레이어 정보, 점수, 생명, 웨이브
+        // ===== UI Layer =====
+        // Top UI: Player info, score, lives, wave
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -126,37 +152,79 @@ fun GameScreen(
             verticalAlignment = Alignment.Top
         ) {
             Column {
+                // Player name with neon effect
                 Text(
                     text = playerName,
-                    color = Color(0xFF39FF14),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.Bold
+                    style = TextStyle(
+                        color = neonGreen,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        shadow = Shadow(
+                            color = neonGreen.copy(alpha = 0.7f),
+                            offset = Offset(0f, 0f),
+                            blurRadius = 10f
+                        )
+                    )
                 )
+                // Score
                 Text(
                     text = "SCORE: ${gameState.score}",
-                    color = Color.White,
-                    fontSize = 14.sp
+                    style = TextStyle(
+                        color = Color.White,
+                        fontSize = 16.sp,
+                        fontWeight = FontWeight.Medium,
+                        shadow = Shadow(
+                            color = Color.White.copy(alpha = 0.5f),
+                            offset = Offset(0f, 0f),
+                            blurRadius = 5f
+                        )
+                    )
                 )
-                Text(
-                    text = "LIVES: ${"❤".repeat(gameState.lives.coerceAtLeast(0))}",
-                    color = Color(0xFFFF5555),
-                    fontSize = 14.sp
-                )
+                // Lives with heart icons
+                Row {
+                    Text(
+                        text = "LIVES: ",
+                        color = Color.White,
+                        fontSize = 14.sp
+                    )
+                    repeat(gameState.lives.coerceAtLeast(0)) {
+                        Text(
+                            text = "❤",
+                            style = TextStyle(
+                                color = neonRed,
+                                fontSize = 16.sp,
+                                shadow = Shadow(
+                                    color = neonRed.copy(alpha = 0.7f),
+                                    offset = Offset(0f, 0f),
+                                    blurRadius = 8f
+                                )
+                            )
+                        )
+                    }
+                }
             }
             
             Column(horizontalAlignment = Alignment.End) {
+                // Wave indicator with neon effect
                 Text(
                     text = "WAVE ${gameState.currentWave}",
-                    color = Color(0xFF00D9FF),
-                    fontSize = 18.sp,
-                    fontWeight = FontWeight.Bold
+                    style = TextStyle(
+                        color = neonCyan,
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        shadow = Shadow(
+                            color = neonCyan.copy(alpha = 0.7f),
+                            offset = Offset(0f, 0f),
+                            blurRadius = 12f
+                        )
+                    )
                 )
-                // 일시정지 버튼
+                // Pause button
                 IconButton(
                     onClick = { gameViewModel.togglePause() },
                     modifier = Modifier
                         .size(48.dp)
-                        .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                        .background(Color.White.copy(alpha = 0.15f), CircleShape)
                 ) {
                     Icon(
                         imageVector = if (gameState.isPaused) Icons.Filled.PlayArrow else Icons.Filled.Pause,
@@ -167,7 +235,7 @@ fun GameScreen(
             }
         }
 
-        // 발사 버튼
+        // Fire button
         Button(
             onClick = { gameViewModel.shoot() },
             modifier = Modifier
@@ -175,7 +243,7 @@ fun GameScreen(
                 .padding(16.dp)
                 .size(80.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF00D9FF)
+                containerColor = neonCyan.copy(alpha = 0.9f)
             ),
             shape = CircleShape,
             enabled = !gameState.isPaused && !gameState.isGameOver
@@ -183,16 +251,17 @@ fun GameScreen(
             Text(
                 "FIRE",
                 color = Color.Black,
-                fontWeight = FontWeight.Bold
+                fontWeight = FontWeight.Bold,
+                fontSize = 14.sp
             )
         }
 
-        // 일시정지 오버레이
+        // Pause overlay
         if (gameState.isPaused && !gameState.isGameOver) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.7f)),
+                    .background(Color.Black.copy(alpha = 0.75f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
@@ -201,14 +270,28 @@ fun GameScreen(
                 ) {
                     Text(
                         text = "PAUSED",
-                        color = Color(0xFF39FF14),
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold
+                        style = TextStyle(
+                            color = neonGreen,
+                            fontSize = 52.sp,
+                            fontWeight = FontWeight.Bold,
+                            shadow = Shadow(
+                                color = neonGreen.copy(alpha = 0.8f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 20f
+                            )
+                        )
                     )
                     Text(
                         text = "Wave ${gameState.currentWave}",
-                        color = Color.White,
-                        fontSize = 24.sp
+                        style = TextStyle(
+                            color = neonCyan,
+                            fontSize = 24.sp,
+                            shadow = Shadow(
+                                color = neonCyan.copy(alpha = 0.6f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 10f
+                            )
+                        )
                     )
                     Text(
                         text = "Score: ${gameState.score}",
@@ -218,7 +301,7 @@ fun GameScreen(
                     Button(
                         onClick = { gameViewModel.togglePause() },
                         colors = ButtonDefaults.buttonColors(
-                            containerColor = Color(0xFF00D9FF)
+                            containerColor = neonCyan
                         )
                     ) {
                         Text("RESUME", color = Color.Black, fontWeight = FontWeight.Bold)
@@ -227,50 +310,80 @@ fun GameScreen(
             }
         }
 
-        // 게임오버
+        // Game Over overlay
         if (gameState.isGameOver) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.8f)),
+                    .background(Color.Black.copy(alpha = 0.85f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(16.dp)
+                    verticalArrangement = Arrangement.spacedBy(20.dp)
                 ) {
                     Text(
                         text = "GAME OVER",
-                        color = Color(0xFFFF5555),
-                        fontSize = 48.sp,
-                        fontWeight = FontWeight.Bold
+                        style = TextStyle(
+                            color = neonRed,
+                            fontSize = 52.sp,
+                            fontWeight = FontWeight.Bold,
+                            shadow = Shadow(
+                                color = neonRed.copy(alpha = 0.8f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 25f
+                            )
+                        )
                     )
                     Text(
-                        text = "Final Score: ${gameState.score}",
-                        color = Color.White,
-                        fontSize = 24.sp
+                        text = "Final Score",
+                        color = Color.White.copy(alpha = 0.7f),
+                        fontSize = 18.sp
+                    )
+                    Text(
+                        text = "${gameState.score}",
+                        style = TextStyle(
+                            color = neonYellow,
+                            fontSize = 48.sp,
+                            fontWeight = FontWeight.Bold,
+                            shadow = Shadow(
+                                color = neonYellow.copy(alpha = 0.7f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 15f
+                            )
+                        )
                     )
                     Text(
                         text = "Wave Reached: ${gameState.currentWave}",
-                        color = Color(0xFF00D9FF),
-                        fontSize = 20.sp
+                        style = TextStyle(
+                            color = neonCyan,
+                            fontSize = 20.sp,
+                            shadow = Shadow(
+                                color = neonCyan.copy(alpha = 0.5f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 8f
+                            )
+                        )
                     )
                     Row(
-                        horizontalArrangement = Arrangement.spacedBy(16.dp)
+                        horizontalArrangement = Arrangement.spacedBy(20.dp),
+                        modifier = Modifier.padding(top = 16.dp)
                     ) {
                         Button(
                             onClick = { gameViewModel.restartGame() },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = Color(0xFF00FF88)
-                            )
+                            ),
+                            modifier = Modifier.size(width = 120.dp, height = 48.dp)
                         ) {
                             Text("RETRY", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
                         Button(
                             onClick = { onNavigateToRanking(gameState.score) },
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = Color(0xFFFFEE00)
-                            )
+                                containerColor = neonYellow
+                            ),
+                            modifier = Modifier.size(width = 120.dp, height = 48.dp)
                         ) {
                             Text("RANKING", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
