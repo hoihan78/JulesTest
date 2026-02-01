@@ -93,10 +93,16 @@ class SettingsDataStore(private val context: Context) {
 }
 
 /**
- * Game difficulty levels
+ * Game difficulty levels with enhanced settings
  */
-enum class Difficulty(val displayName: String, val speedMultiplier: Float, val shootFrequencyMultiplier: Float) {
-    EASY("쉬움", 0.7f, 0.6f),
-    NORMAL("보통", 1.0f, 1.0f),
-    HARD("어려움", 1.3f, 1.4f)
+enum class Difficulty(
+    val displayName: String, 
+    val speedMultiplier: Float, 
+    val shootFrequencyMultiplier: Float,
+    val startingLives: Int,
+    val powerUpDropRate: Float
+) {
+    EASY("쉬움", 0.7f, 0.5f, 5, 0.15f),
+    NORMAL("보통", 1.0f, 1.0f, 3, 0.10f),
+    HARD("어려움", 1.3f, 2.0f, 2, 0.05f)
 }
