@@ -7,14 +7,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -59,7 +63,8 @@ private val neonYellow = Color(0xFFFFEE00)
 @Composable
 fun GameScreen(
     playerName: String,
-    onNavigateToRanking: (Int) -> Unit,
+    onNavigateToRanking: (Int, Int) -> Unit,
+    onNavigateToTitle: () -> Unit = {},
     gameViewModel: GameViewModel = viewModel()
 ) {
     val gameState by gameViewModel.gameState.collectAsState()
@@ -298,13 +303,55 @@ fun GameScreen(
                         color = Color.White,
                         fontSize = 20.sp
                     )
+                    
+                    Spacer(modifier = Modifier.height(20.dp))
+                    
+                    // Resume button
                     Button(
                         onClick = { gameViewModel.togglePause() },
                         colors = ButtonDefaults.buttonColors(
                             containerColor = neonCyan
-                        )
+                        ),
+                        modifier = Modifier.size(width = 200.dp, height = 56.dp)
                     ) {
-                        Text("RESUME", color = Color.Black, fontWeight = FontWeight.Bold)
+                        Icon(
+                            Icons.Filled.PlayArrow,
+                            contentDescription = null,
+                            tint = Color.Black
+                        )
+                        Text("  RESUME", color = Color.Black, fontWeight = FontWeight.Bold)
+                    }
+                    
+                    // Settings button (placeholder - could navigate to settings)
+                    Button(
+                        onClick = { /* Could open in-game settings */ },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = neonGreen.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.size(width = 200.dp, height = 56.dp)
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = neonGreen
+                        )
+                        Text("  설정", color = neonGreen, fontWeight = FontWeight.Bold)
+                    }
+                    
+                    // Exit to title button
+                    Button(
+                        onClick = onNavigateToTitle,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = neonRed.copy(alpha = 0.3f)
+                        ),
+                        modifier = Modifier.size(width = 200.dp, height = 56.dp)
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ExitToApp,
+                            contentDescription = null,
+                            tint = neonRed
+                        )
+                        Text("  메인 메뉴", color = neonRed, fontWeight = FontWeight.Bold)
                     }
                 }
             }
@@ -379,7 +426,7 @@ fun GameScreen(
                             Text("RETRY", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
                         Button(
-                            onClick = { onNavigateToRanking(gameState.score) },
+                            onClick = { onNavigateToRanking(gameState.score, gameState.currentWave) },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = neonYellow
                             ),
@@ -388,8 +435,34 @@ fun GameScreen(
                             Text("RANKING", color = Color.Black, fontWeight = FontWeight.Bold)
                         }
                     }
+                    
+                    // Main menu button
+                    Button(
+                        onClick = onNavigateToTitle,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White.copy(alpha = 0.2f)
+                        ),
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text("메인 메뉴", color = Color.White)
+                    }
                 }
             }
         }
     }
+}
+
+// Backward compatible version for old navigation (single score parameter)
+@Composable
+fun GameScreen(
+    playerName: String,
+    onNavigateToRanking: (Int) -> Unit,
+    gameViewModel: GameViewModel = viewModel()
+) {
+    GameScreen(
+        playerName = playerName,
+        onNavigateToRanking = { score, _ -> onNavigateToRanking(score) },
+        onNavigateToTitle = {},
+        gameViewModel = gameViewModel
+    )
 }
