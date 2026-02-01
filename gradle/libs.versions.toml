@@ -17,6 +17,7 @@ room_version = "2.6.1"
 biometric_version = "1.1.0"
 navigationVersion = "2.7.7"
 gsonVersion = "2.10.1"
+datastoreVersion = "1.1.1"
 
 
 [libraries]
@@ -46,6 +47,7 @@ androidx-room-compiler = { group = "androidx.room", name = "room-compiler", vers
 androidx-biometric = { group = "androidx.biometric", name = "biometric", version.ref = "biometric_version"}
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationVersion" }
 gson = { group = "com.google.code.gson", name = "gson", version.ref = "gsonVersion" }
+androidx-datastore-preferences = { group = "androidx.datastore", name = "datastore-preferences", version.ref = "datastoreVersion" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
