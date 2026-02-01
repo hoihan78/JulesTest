@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
@@ -29,6 +31,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val settingsDataStore = SettingsDataStore(application)
 
     private var gameLoopJob: Job? = null
+    private var autoFireJob: Job? = null
     private var lastUpdateTime = System.currentTimeMillis()
     private var animationTime = 0f  // For sprite animations
 
@@ -38,9 +41,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val speedIncreasePerWave = 0.05f  // 웨이브당 5% 속도 증가
     private val shootFrequencyIncreasePerWave = 0.10f  // 웨이브당 10% 발사 빈도 증가
 
-    // Difficulty multipliers (updated from settings)
+    // Difficulty settings (updated from preferences)
+    private var currentDifficulty = Difficulty.NORMAL
     private var difficultySpeedMultiplier = 1.0f
     private var difficultyShootMultiplier = 1.0f
+    private var powerUpDropRate = 0.10f
 
     // Screen dimensions (will be updated)
     private var screenWidth = 800f
@@ -48,6 +53,26 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     
     // Player invincibility duration after hit
     private val invincibilityDuration = 2000L  // 2 seconds
+    
+    // Power-up durations
+    private val powerUpDuration = mapOf(
+        PowerUpType.DOUBLE_SHOT to 10000L,
+        PowerUpType.TRIPLE_SHOT to 10000L,
+        PowerUpType.SHIELD to 15000L,
+        PowerUpType.SPEED_UP to 10000L,
+        PowerUpType.EXTRA_LIFE to 0L  // Instant effect
+    )
+    
+    // Combo settings
+    private val comboTimeWindow = 2000L  // 2초 내 연속 킬
+    private val comboDisplayDuration = 1500L  // 콤보 표시 시간
+    
+    // Auto-fire settings
+    private val autoFireInterval = 200L  // 0.2초 간격
+    
+    // Boss settings
+    private val bossWaveInterval = 5  // 웨이브 5마다 보스
+    private val bossWarningDuration = 2000L  // 보스 경고 2초
     
     // Particle colors
     private val explosionColors = listOf(
@@ -61,6 +86,15 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         Color(0xFFFFEE00),  // Yellow
         Color(0xFFFFFFFF),  // White
         Color(0xFF00D9FF)   // Cyan
+    )
+    
+    // Power-up colors
+    private val powerUpColors = mapOf(
+        PowerUpType.DOUBLE_SHOT to Color(0xFF00D9FF),   // Cyan
+        PowerUpType.TRIPLE_SHOT to Color(0xFF9D4EDD),   // Purple
+        PowerUpType.SHIELD to Color(0xFF00FF88),        // Green
+        PowerUpType.SPEED_UP to Color(0xFFFFEE00),      // Yellow
+        PowerUpType.EXTRA_LIFE to Color(0xFFFF0055)     // Red
     )
 
     init {
@@ -80,13 +114,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
 
         // Load difficulty
         val difficultyName = settingsDataStore.difficulty.first()
-        val difficulty = try {
+        currentDifficulty = try {
             Difficulty.valueOf(difficultyName)
         } catch (e: Exception) {
             Difficulty.NORMAL
         }
-        difficultySpeedMultiplier = difficulty.speedMultiplier
-        difficultyShootMultiplier = difficulty.shootFrequencyMultiplier
+        difficultySpeedMultiplier = currentDifficulty.speedMultiplier
+        difficultyShootMultiplier = currentDifficulty.shootFrequencyMultiplier
+        powerUpDropRate = currentDifficulty.powerUpDropRate
+        
+        // Apply starting lives based on difficulty
+        _gameState.update { state ->
+            state.copy(lives = currentDifficulty.startingLives)
+        }
 
         // Start BGM
         soundManager.playBGM()
@@ -140,11 +180,19 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val shootIntervalMultiplier = (waveShootMultiplier / difficultyShootMultiplier).coerceAtLeast(0.3f)
             val adjustedShootInterval = (baseShootInterval * shootIntervalMultiplier).toLong()
 
+            // ===== Update Screen Shake =====
+            val screenShake = if (currentState.screenShake.intensity > 0 && 
+                currentTime - currentState.screenShake.startTime < currentState.screenShake.duration) {
+                val progress = (currentTime - currentState.screenShake.startTime).toFloat() / currentState.screenShake.duration
+                currentState.screenShake.copy(intensity = currentState.screenShake.intensity * (1f - progress))
+            } else {
+                ScreenShakeInfo()
+            }
+
             // ===== Update Stars (Background Scroll) =====
             val updatedStars = currentState.stars.map { star ->
                 val newY = star.position.y + star.speed
                 if (newY > screenHeight) {
-                    // Respawn at top with random X
                     star.copy(
                         position = Offset(
                             Random.nextFloat() * screenWidth,
@@ -171,6 +219,39 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         position = particle.position + particle.velocity
                     )
                 }
+                
+            // ===== Update Floating Texts =====
+            val activeFloatingTexts = currentState.floatingTexts
+                .filter { text ->
+                    currentTime - text.createdAt < text.duration
+                }
+                .map { text ->
+                    val progress = (currentTime - text.createdAt).toFloat() / text.duration
+                    text.copy(position = text.position.copy(y = text.position.y - 1f))
+                }
+
+            // ===== Update Power-ups =====
+            // Move power-ups down and remove if off screen
+            val movedPowerUps = currentState.powerUps
+                .map { powerUp ->
+                    powerUp.copy(position = powerUp.position + powerUp.velocity)
+                }
+                .filter { it.position.y < screenHeight }
+            
+            // Check power-up expiration
+            val activePowerUps = currentState.activePowerUps.filter { (_, expiry) ->
+                currentTime < expiry
+            }
+            
+            // Update shot level based on active power-ups
+            val shotLevel = when {
+                activePowerUps.containsKey(PowerUpType.TRIPLE_SHOT) -> 3
+                activePowerUps.containsKey(PowerUpType.DOUBLE_SHOT) -> 2
+                else -> 1
+            }
+            
+            val hasShield = activePowerUps.containsKey(PowerUpType.SHIELD)
+            val playerSpeed = if (activePowerUps.containsKey(PowerUpType.SPEED_UP)) 1.5f else 1.0f
 
             // ===== Update Player Invincibility =====
             val updatedPlayer = if (currentState.player.isInvincible && 
@@ -178,6 +259,12 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 currentState.player.copy(isInvincible = false)
             } else {
                 currentState.player
+            }
+
+            // ===== Update Combo =====
+            var combo = currentState.combo
+            if (combo.count > 0 && currentTime - combo.lastKillTime > comboTimeWindow) {
+                combo = ComboInfo()  // Reset combo
             }
 
             // 플레이어 총알 이동
@@ -198,7 +285,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val newEnemyBullets = currentState.enemyBullets.toMutableList()
             newEnemies = newEnemies.map { enemy ->
                 if (currentTime - enemy.lastShotTime > adjustedShootInterval + Random.nextLong(500)) {
-                    // 플레이어 방향으로 총알 발사
                     val direction = updatedPlayer.position - enemy.position
                     val distance = sqrt(direction.x * direction.x + direction.y * direction.y)
                     if (distance > 0) {
@@ -219,6 +305,24 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 .map { it.copy(position = it.position + it.velocity) }
                 .filter { it.position.y < screenHeight && it.position.y > 0 && it.position.x > 0 && it.position.x < screenWidth }
 
+            // ===== Boss Battle Logic =====
+            var stageBoss = currentState.stageBoss
+            var bossBullets = currentState.bossBullets.toMutableList()
+            var bossWarning = currentState.bossWarning
+            var bossWarningStartTime = currentState.bossWarningStartTime
+            var isBossWave = currentState.isBossWave
+            
+            // Update boss bullets
+            bossBullets = bossBullets
+                .map { it.copy(position = it.position + it.velocity) }
+                .filter { it.position.y < screenHeight && it.position.y > 0 && 
+                         it.position.x > 0 && it.position.x < screenWidth }
+                .toMutableList()
+            
+            if (stageBoss != null) {
+                stageBoss = updateBoss(stageBoss, updatedPlayer.position, currentTime, bossBullets)
+            }
+
             // 플레이어 총알 - 적군 충돌 감지
             var score = currentState.score
             val remainingEnemies = newEnemies.toMutableList()
@@ -227,7 +331,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val bulletsToRemove = mutableListOf<Bullet>()
             val newExplosions = activeExplosions.toMutableList()
             val newParticles = activeParticles.toMutableList()
+            val newFloatingTexts = activeFloatingTexts.toMutableList()
+            val newPowerUps = movedPowerUps.toMutableList()
+            var newActivePowerUps = activePowerUps.toMutableMap()
 
+            // Player bullets vs enemies
             for (bullet in remainingBullets) {
                 for (enemy in remainingEnemies) {
                     if (bullet.position.getDistance(enemy.position) < 40f) {
@@ -235,7 +343,36 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                         val newHealth = enemy.health - 1
                         if (newHealth <= 0) {
                             enemiesToRemove.add(enemy)
-                            score += enemy.type.points
+                            
+                            // Update combo
+                            val newComboCount = if (currentTime - combo.lastKillTime < comboTimeWindow) {
+                                combo.count + 1
+                            } else {
+                                1
+                            }
+                            val comboMultiplier = 1f + (newComboCount - 1) * 0.5f
+                            combo = ComboInfo(
+                                count = newComboCount,
+                                lastKillTime = currentTime,
+                                displayUntil = currentTime + comboDisplayDuration,
+                                multiplier = comboMultiplier
+                            )
+                            
+                            val basePoints = enemy.type.points
+                            val earnedPoints = (basePoints * comboMultiplier).toInt()
+                            score += earnedPoints
+                            
+                            // Show combo text
+                            if (newComboCount >= 2) {
+                                newFloatingTexts.add(
+                                    FloatingText(
+                                        text = "${newComboCount}x COMBO! +$earnedPoints",
+                                        position = enemy.position.copy(y = enemy.position.y - 20f),
+                                        color = Color(0xFFFFEE00),
+                                        createdAt = currentTime
+                                    )
+                                )
+                            }
                             
                             // Play explosion sound
                             soundManager.playSound(SoundManager.SFX_EXPLOSION)
@@ -263,6 +400,18 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                             newParticles.addAll(
                                 createDestructionParticles(enemy.position, enemy.type, currentTime)
                             )
+                            
+                            // Power-up drop chance
+                            if (Random.nextFloat() < powerUpDropRate) {
+                                val powerUpType = PowerUpType.entries.random()
+                                newPowerUps.add(
+                                    PowerUp(
+                                        position = enemy.position,
+                                        type = powerUpType,
+                                        createdAt = currentTime
+                                    )
+                                )
+                            }
                         } else {
                             val index = remainingEnemies.indexOf(enemy)
                             if (index >= 0) {
@@ -273,19 +422,182 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             }
+            
+            // Player bullets vs Stage Boss
+            if (stageBoss != null) {
+                for (bullet in remainingBullets) {
+                    if (bullet.position.getDistance(stageBoss.position) < 60f && !bulletsToRemove.contains(bullet)) {
+                        bulletsToRemove.add(bullet)
+                        val newHealth = stageBoss.health - 1
+                        
+                        if (newHealth <= 0) {
+                            // Boss defeated!
+                            score += 500 * wave  // Big bonus for boss
+                            
+                            soundManager.playSound(SoundManager.SFX_EXPLOSION)
+                            soundManager.vibrate(SoundManager.VibrationType.GAMEOVER)
+                            
+                            // Big explosion
+                            newExplosions.add(
+                                Explosion(
+                                    position = stageBoss.position,
+                                    startTime = currentTime,
+                                    duration = 800,
+                                    color = Color(0xFFFF0055)
+                                )
+                            )
+                            
+                            // Lots of particles
+                            for (i in 0 until 30) {
+                                val angle = Random.nextFloat() * 2f * PI.toFloat()
+                                val speed = 2f + Random.nextFloat() * 6f
+                                newParticles.add(
+                                    Particle(
+                                        position = stageBoss.position,
+                                        velocity = Offset(cos(angle) * speed, sin(angle) * speed),
+                                        color = listOf(Color(0xFFFF0055), Color(0xFFFFEE00), Color(0xFFFFFFFF)).random(),
+                                        size = 3f + Random.nextFloat() * 5f,
+                                        lifetime = 400 + Random.nextInt(400),
+                                        createdAt = currentTime
+                                    )
+                                )
+                            }
+                            
+                            // Screen shake
+                            val newScreenShake = ScreenShakeInfo(
+                                intensity = 25f,
+                                startTime = currentTime,
+                                duration = 500
+                            )
+                            
+                            // Drop guaranteed power-up from boss
+                            newPowerUps.add(
+                                PowerUp(
+                                    position = stageBoss.position,
+                                    type = PowerUpType.entries.random(),
+                                    createdAt = currentTime
+                                )
+                            )
+                            
+                            // Show boss defeated text
+                            newFloatingTexts.add(
+                                FloatingText(
+                                    text = "BOSS DEFEATED! +${500 * wave}",
+                                    position = stageBoss.position,
+                                    color = Color(0xFF00FF88),
+                                    createdAt = currentTime,
+                                    duration = 2000,
+                                    fontSize = 32
+                                )
+                            )
+                            
+                            stageBoss = null
+                            isBossWave = false
+                            
+                            return@update currentState.copy(
+                                player = updatedPlayer,
+                                bullets = remainingBullets - bulletsToRemove.toSet(),
+                                enemies = remainingEnemies - enemiesToRemove.toSet(),
+                                enemyBullets = movedEnemyBullets,
+                                score = score,
+                                currentWave = wave + 1,
+                                formationPattern = FormationPattern.entries[(wave) % FormationPattern.entries.size],
+                                stars = updatedStars,
+                                explosions = newExplosions,
+                                particles = newParticles,
+                                floatingTexts = newFloatingTexts,
+                                powerUps = newPowerUps,
+                                activePowerUps = newActivePowerUps,
+                                shotLevel = shotLevel,
+                                hasShield = hasShield,
+                                playerSpeed = playerSpeed,
+                                stageBoss = null,
+                                bossBullets = emptyList(),
+                                isBossWave = false,
+                                bossWarning = false,
+                                combo = combo,
+                                screenShake = newScreenShake
+                            )
+                        } else {
+                            stageBoss = stageBoss.copy(
+                                health = newHealth,
+                                isHit = true,
+                                hitTime = currentTime,
+                                phase = when {
+                                    newHealth > stageBoss.maxHealth * 0.66f -> 1
+                                    newHealth > stageBoss.maxHealth * 0.33f -> 2
+                                    else -> 3
+                                }
+                            )
+                        }
+                    }
+                }
+                
+                // Reset hit flash
+                if (stageBoss != null && stageBoss.isHit && currentTime - stageBoss.hitTime > 100) {
+                    stageBoss = stageBoss.copy(isHit = false)
+                }
+            }
+            
             remainingBullets.removeAll(bulletsToRemove)
             remainingEnemies.removeAll(enemiesToRemove)
 
-            // 적군과 플레이어 충돌 확인 (only if not invincible)
-            var lives = currentState.lives
-            var playerAfterCollision = updatedPlayer
+            // ===== Power-up Collection =====
+            val collectedPowerUps = mutableListOf<PowerUp>()
+            for (powerUp in newPowerUps) {
+                if (powerUp.position.getDistance(updatedPlayer.position) < 50f) {
+                    collectedPowerUps.add(powerUp)
+                    
+                    when (powerUp.type) {
+                        PowerUpType.EXTRA_LIFE -> {
+                            // Instant effect - handled below
+                        }
+                        else -> {
+                            val duration = powerUpDuration[powerUp.type] ?: 10000L
+                            newActivePowerUps[powerUp.type] = currentTime + duration
+                        }
+                    }
+                    
+                    // Show power-up text
+                    val powerUpName = when (powerUp.type) {
+                        PowerUpType.DOUBLE_SHOT -> "DOUBLE SHOT!"
+                        PowerUpType.TRIPLE_SHOT -> "TRIPLE SHOT!"
+                        PowerUpType.SHIELD -> "SHIELD!"
+                        PowerUpType.SPEED_UP -> "SPEED UP!"
+                        PowerUpType.EXTRA_LIFE -> "+1 LIFE!"
+                    }
+                    newFloatingTexts.add(
+                        FloatingText(
+                            text = powerUpName,
+                            position = powerUp.position,
+                            color = powerUpColors[powerUp.type] ?: Color.White,
+                            createdAt = currentTime,
+                            fontSize = 28
+                        )
+                    )
+                    
+                    soundManager.playSound(SoundManager.SFX_LEVELUP)
+                }
+            }
+            newPowerUps.removeAll(collectedPowerUps)
             
-            if (!updatedPlayer.isInvincible) {
+            // Handle extra life power-up
+            var lives = currentState.lives
+            if (collectedPowerUps.any { it.type == PowerUpType.EXTRA_LIFE }) {
+                lives += 1
+            }
+
+            // 적군과 플레이어 충돌 확인 (only if not invincible and no shield)
+            var playerAfterCollision = updatedPlayer
+            var perfectWave = currentState.perfectWave
+            
+            if (!updatedPlayer.isInvincible && !hasShield) {
                 val enemiesHittingPlayer = remainingEnemies.filter { 
                     it.position.getDistance(updatedPlayer.position) < 40f 
                 }
                 if (enemiesHittingPlayer.isNotEmpty()) {
                     lives -= enemiesHittingPlayer.size
+                    perfectWave = false
                     remainingEnemies.removeAll(enemiesHittingPlayer)
                     playerAfterCollision = updatedPlayer.copy(
                         isInvincible = true,
@@ -305,28 +617,86 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                             color = Color(0xFF00D9FF)
                         )
                     )
+                    
+                    // Screen shake on hit
+                    return@update currentState.copy(
+                        screenShake = ScreenShakeInfo(
+                            intensity = 15f,
+                            startTime = currentTime,
+                            duration = 300
+                        )
+                    ).let { state ->
+                        state.copy(
+                            player = playerAfterCollision,
+                            bullets = remainingBullets,
+                            enemies = remainingEnemies,
+                            enemyBullets = movedEnemyBullets,
+                            score = score,
+                            lives = lives,
+                            stars = updatedStars,
+                            explosions = newExplosions,
+                            particles = newParticles,
+                            floatingTexts = newFloatingTexts,
+                            powerUps = newPowerUps,
+                            activePowerUps = newActivePowerUps,
+                            shotLevel = shotLevel,
+                            hasShield = hasShield,
+                            playerSpeed = playerSpeed,
+                            stageBoss = stageBoss,
+                            bossBullets = bossBullets,
+                            combo = combo,
+                            perfectWave = perfectWave
+                        )
+                    }
                 }
             }
 
-            // 적군 총알과 플레이어 충돌 확인 (only if not invincible)
+            // 적군 총알과 플레이어 충돌 확인 (only if not invincible and no shield)
             val remainingEnemyBullets = movedEnemyBullets.toMutableList()
-            if (!playerAfterCollision.isInvincible) {
+            if (!playerAfterCollision.isInvincible && !hasShield) {
                 val enemyBulletsHittingPlayer = remainingEnemyBullets.filter {
                     it.position.getDistance(playerAfterCollision.position) < 30f
                 }
                 if (enemyBulletsHittingPlayer.isNotEmpty()) {
                     lives -= enemyBulletsHittingPlayer.size
+                    perfectWave = false
                     remainingEnemyBullets.removeAll(enemyBulletsHittingPlayer)
                     playerAfterCollision = playerAfterCollision.copy(
                         isInvincible = true,
                         invincibleUntil = currentTime + invincibilityDuration
                     )
                     
-                    // Play hit sound
                     soundManager.playSound(SoundManager.SFX_HIT)
                     soundManager.vibrate(SoundManager.VibrationType.HIT)
                     
-                    // Add hit effect
+                    newExplosions.add(
+                        Explosion(
+                            position = playerAfterCollision.position,
+                            startTime = currentTime,
+                            duration = 300,
+                            color = Color(0xFFFF0055)
+                        )
+                    )
+                }
+            }
+            
+            // Boss bullets vs player
+            if (!playerAfterCollision.isInvincible && !hasShield) {
+                val bossBulletsHittingPlayer = bossBullets.filter {
+                    it.position.getDistance(playerAfterCollision.position) < 30f
+                }
+                if (bossBulletsHittingPlayer.isNotEmpty()) {
+                    lives -= bossBulletsHittingPlayer.size
+                    perfectWave = false
+                    bossBullets.removeAll(bossBulletsHittingPlayer)
+                    playerAfterCollision = playerAfterCollision.copy(
+                        isInvincible = true,
+                        invincibleUntil = currentTime + invincibilityDuration
+                    )
+                    
+                    soundManager.playSound(SoundManager.SFX_HIT)
+                    soundManager.vibrate(SoundManager.VibrationType.HIT)
+                    
                     newExplosions.add(
                         Explosion(
                             position = playerAfterCollision.position,
@@ -344,18 +714,89 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             // 웨이브 시스템: 모든 적 제거 시 다음 웨이브
             var newWave = wave
             var newFormation = currentState.formationPattern
-            if (remainingEnemies.isEmpty()) {
-                newWave = wave + 1
-                newFormation = FormationPattern.entries[(newWave - 1) % FormationPattern.entries.size]
-                remainingEnemies.addAll(createWaveEnemies(newWave, newFormation))
+            
+            // Check if it's time for a boss wave
+            if (remainingEnemies.isEmpty() && stageBoss == null && !bossWarning) {
+                // Perfect wave bonus
+                if (perfectWave) {
+                    val bonus = 100 * wave
+                    score += bonus
+                    newFloatingTexts.add(
+                        FloatingText(
+                            text = "PERFECT! +$bonus",
+                            position = Offset(screenWidth / 2, screenHeight / 2),
+                            color = Color(0xFF00FF88),
+                            createdAt = currentTime,
+                            duration = 2000,
+                            fontSize = 36
+                        )
+                    )
+                }
                 
-                // Play level up sound
-                soundManager.playSound(SoundManager.SFX_LEVELUP)
+                newWave = wave + 1
+                perfectWave = true  // Reset for new wave
+                newFormation = FormationPattern.entries[(newWave - 1) % FormationPattern.entries.size]
+                
+                // Check if this is a boss wave
+                if (newWave % bossWaveInterval == 0) {
+                    bossWarning = true
+                    bossWarningStartTime = currentTime
+                    isBossWave = true
+                    
+                    // Screen shake for boss warning
+                    return@update currentState.copy(
+                        player = playerAfterCollision,
+                        bullets = remainingBullets,
+                        enemies = emptyList(),
+                        enemyBullets = remainingEnemyBullets,
+                        score = score,
+                        lives = lives,
+                        currentWave = newWave,
+                        formationPattern = newFormation,
+                        stars = updatedStars,
+                        explosions = newExplosions,
+                        particles = newParticles,
+                        floatingTexts = newFloatingTexts,
+                        powerUps = newPowerUps,
+                        activePowerUps = newActivePowerUps,
+                        shotLevel = shotLevel,
+                        hasShield = hasShield,
+                        playerSpeed = playerSpeed,
+                        isBossWave = true,
+                        bossWarning = true,
+                        bossWarningStartTime = currentTime,
+                        bossBullets = bossBullets,
+                        combo = combo,
+                        perfectWave = true,
+                        screenShake = ScreenShakeInfo(
+                            intensity = 20f,
+                            startTime = currentTime,
+                            duration = 2000
+                        )
+                    )
+                } else {
+                    remainingEnemies.addAll(createWaveEnemies(newWave, newFormation))
+                    soundManager.playSound(SoundManager.SFX_LEVELUP)
+                }
+            }
+            
+            // Spawn boss after warning
+            if (bossWarning && currentTime - bossWarningStartTime > bossWarningDuration && stageBoss == null) {
+                bossWarning = false
+                stageBoss = StageBoss(
+                    position = Offset(screenWidth / 2, 150f),
+                    health = 20 + (wave / 5) * 10,  // Health scales with wave
+                    maxHealth = 20 + (wave / 5) * 10,
+                    phase = 1,
+                    attackPattern = BossAttackPattern.CIRCLE_SHOT,
+                    lastAttackTime = currentTime
+                )
             }
 
             val isGameOver = lives <= 0
             if (isGameOver) {
                 gameLoopJob?.cancel()
+                autoFireJob?.cancel()
                 soundManager.playSound(SoundManager.SFX_GAMEOVER)
                 soundManager.vibrate(SoundManager.VibrationType.GAMEOVER)
                 soundManager.stopBGM()
@@ -373,11 +814,138 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 formationPattern = newFormation,
                 stars = updatedStars,
                 explosions = newExplosions,
-                particles = newParticles
+                particles = newParticles,
+                floatingTexts = newFloatingTexts,
+                powerUps = newPowerUps,
+                activePowerUps = newActivePowerUps,
+                shotLevel = shotLevel,
+                hasShield = hasShield,
+                playerSpeed = playerSpeed,
+                stageBoss = stageBoss,
+                bossBullets = bossBullets,
+                isBossWave = isBossWave,
+                bossWarning = bossWarning,
+                bossWarningStartTime = bossWarningStartTime,
+                combo = combo,
+                perfectWave = perfectWave,
+                screenShake = screenShake
             )
         }
         
         lastUpdateTime = currentTime
+    }
+    
+    // Boss AI update
+    private fun updateBoss(
+        boss: StageBoss,
+        playerPosition: Offset,
+        currentTime: Long,
+        bossBullets: MutableList<BossBullet>
+    ): StageBoss {
+        var updatedBoss = boss.copy(animationPhase = boss.animationPhase + 1f)
+        
+        // Movement pattern - horizontal movement
+        val moveSpeed = 2f + (boss.phase - 1) * 0.5f
+        val moveRange = screenWidth * 0.35f
+        val centerX = screenWidth / 2
+        val targetX = centerX + sin(boss.animationPhase * 0.02f) * moveRange
+        
+        var newPosition = if (!boss.isDiving) {
+            Offset(
+                boss.position.x + (targetX - boss.position.x) * 0.02f,
+                boss.position.y
+            )
+        } else {
+            // Diving attack
+            boss.position + Offset(0f, 8f)
+        }
+        
+        // Check if dive attack should end
+        if (boss.isDiving && newPosition.y > screenHeight * 0.7f) {
+            updatedBoss = updatedBoss.copy(
+                isDiving = false,
+                position = boss.originalPosition ?: Offset(centerX, 150f)
+            )
+            newPosition = updatedBoss.position
+        }
+        
+        // Attack patterns based on phase
+        val attackInterval = when (boss.phase) {
+            1 -> 3000L
+            2 -> 2000L
+            else -> 1000L
+        }
+        
+        if (currentTime - boss.lastAttackTime > attackInterval && !boss.isDiving) {
+            when (boss.phase) {
+                1 -> {
+                    // Circle shot - 8 directions
+                    for (i in 0 until 8) {
+                        val angle = (2 * PI * i / 8).toFloat()
+                        val velocity = Offset(cos(angle) * 5f, sin(angle) * 5f)
+                        bossBullets.add(BossBullet(newPosition, velocity, Color(0xFFFF0055)))
+                    }
+                    updatedBoss = updatedBoss.copy(
+                        lastAttackTime = currentTime,
+                        attackPattern = BossAttackPattern.CIRCLE_SHOT
+                    )
+                }
+                2 -> {
+                    // Spiral shot - 12 directions with rotation
+                    val rotationOffset = (currentTime / 100f) % (2 * PI).toFloat()
+                    for (i in 0 until 12) {
+                        val angle = (2 * PI * i / 12).toFloat() + rotationOffset
+                        val velocity = Offset(cos(angle) * 6f, sin(angle) * 6f)
+                        bossBullets.add(BossBullet(newPosition, velocity, Color(0xFF9D4EDD)))
+                    }
+                    updatedBoss = updatedBoss.copy(
+                        lastAttackTime = currentTime,
+                        attackPattern = BossAttackPattern.SPIRAL_SHOT
+                    )
+                }
+                3 -> {
+                    // Phase 3: Mixed attacks
+                    when (Random.nextInt(3)) {
+                        0 -> {
+                            // Dive attack
+                            updatedBoss = updatedBoss.copy(
+                                isDiving = true,
+                                originalPosition = newPosition,
+                                targetPosition = playerPosition,
+                                lastAttackTime = currentTime,
+                                attackPattern = BossAttackPattern.DIVE_ATTACK
+                            )
+                        }
+                        1 -> {
+                            // Aimed shot burst at player
+                            val direction = playerPosition - newPosition
+                            val distance = sqrt(direction.x * direction.x + direction.y * direction.y)
+                            if (distance > 0) {
+                                for (spread in -2..2) {
+                                    val spreadAngle = spread * 0.15f
+                                    val baseAngle = atan2(direction.y, direction.x)
+                                    val finalAngle = baseAngle + spreadAngle
+                                    val velocity = Offset(cos(finalAngle) * 7f, sin(finalAngle) * 7f)
+                                    bossBullets.add(BossBullet(newPosition, velocity, Color(0xFFFF0055)))
+                                }
+                            }
+                            updatedBoss = updatedBoss.copy(lastAttackTime = currentTime)
+                        }
+                        else -> {
+                            // Circle shot (faster)
+                            for (i in 0 until 16) {
+                                val angle = (2 * PI * i / 16).toFloat()
+                                val velocity = Offset(cos(angle) * 8f, sin(angle) * 8f)
+                                bossBullets.add(BossBullet(newPosition, velocity, Color(0xFFFFEE00)))
+                            }
+                            updatedBoss = updatedBoss.copy(lastAttackTime = currentTime)
+                        }
+                    }
+                }
+            }
+        }
+        
+        return updatedBoss.copy(position = newPosition)
     }
 
     // Create particles when enemy is destroyed
@@ -400,7 +968,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         }
         
         for (i in 0 until particleCount) {
-            val angle = Random.nextFloat() * 2f * Math.PI.toFloat()
+            val angle = Random.nextFloat() * 2f * PI.toFloat()
             val speed = 2f + Random.nextFloat() * 4f
             val velocity = Offset(
                 cos(angle) * speed,
@@ -430,7 +998,7 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val particles = mutableListOf<Particle>()
         
         for (i in 0 until 5) {
-            val angle = -Math.PI.toFloat() / 2 + (Random.nextFloat() - 0.5f) * 0.5f
+            val angle = -PI.toFloat() / 2 + (Random.nextFloat() - 0.5f) * 0.5f
             val speed = 3f + Random.nextFloat() * 3f
             val velocity = Offset(
                 cos(angle) * speed,
@@ -457,22 +1025,21 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val stars = mutableListOf<Star>()
         
         for (i in 0 until 150) {
-            // Create stars in 3 layers for depth
             val layer = i % 3
             val speed = when(layer) {
-                0 -> 0.5f + Random.nextFloat() * 0.5f  // Far (slow)
-                1 -> 1.0f + Random.nextFloat() * 0.5f  // Middle
-                else -> 1.5f + Random.nextFloat() * 1.0f  // Near (fast)
+                0 -> 0.5f + Random.nextFloat() * 0.5f
+                1 -> 1.0f + Random.nextFloat() * 0.5f
+                else -> 1.5f + Random.nextFloat() * 1.0f
             }
             val brightness = when(layer) {
-                0 -> 0.3f + Random.nextFloat() * 0.2f  // Dim
-                1 -> 0.5f + Random.nextFloat() * 0.3f  // Medium
-                else -> 0.7f + Random.nextFloat() * 0.3f  // Bright
+                0 -> 0.3f + Random.nextFloat() * 0.2f
+                1 -> 0.5f + Random.nextFloat() * 0.3f
+                else -> 0.7f + Random.nextFloat() * 0.3f
             }
             val size = when(layer) {
-                0 -> 1f  // Small
-                1 -> 1.5f  // Medium
-                else -> 2f + Random.nextFloat()  // Large
+                0 -> 1f
+                1 -> 1.5f
+                else -> 2f + Random.nextFloat()
             }
             
             stars.add(
@@ -498,12 +1065,11 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val baseY = 100f
         val spacing = 80f
         
-        // 웨이브 3, 6, 9마다 보스 추가
-        val includeBoss = wave % 3 == 0
+        // 웨이브 3, 6, 9마다 보스 추가 (not boss wave - those are separate)
+        val includeBoss = wave % 3 == 0 && wave % bossWaveInterval != 0
         
         when (pattern) {
             FormationPattern.V_SHAPE -> {
-                // V자 대형
                 for (row in 0 until 3) {
                     for (col in 0..row) {
                         val x = baseX - (row * spacing / 2) + (col * spacing)
@@ -523,7 +1089,6 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             FormationPattern.INVERTED_V -> {
-                // 역V자 대형
                 for (row in 0 until 3) {
                     val cols = 3 - row
                     for (col in 0 until cols) {
@@ -544,9 +1109,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             FormationPattern.GRID -> {
-                // 격자형 대형
                 val rows = 3
-                val cols = 4 + (wave / 2).coerceAtMost(3)  // 웨이브마다 열 증가
+                val cols = 4 + (wave / 2).coerceAtMost(3)
                 for (row in 0 until rows) {
                     for (col in 0 until cols) {
                         val x = baseX - ((cols - 1) * spacing / 2) + (col * spacing)
@@ -573,7 +1137,8 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
     fun movePlayer(delta: Float) {
         _gameState.update {
             if (it.isPaused) return@update it
-            val newPosition = it.player.position.x + delta
+            val speedMultiplier = it.playerSpeed
+            val newPosition = it.player.position.x + delta * speedMultiplier
             it.copy(
                 player = it.player.copy(
                     position = it.player.position.copy(x = newPosition.coerceIn(30f, screenWidth - 30f))
@@ -586,7 +1151,20 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         val currentTime = System.currentTimeMillis()
         _gameState.update {
             if (it.isPaused || it.isGameOver) return@update it
-            val newBullet = Bullet(position = it.player.position)
+            
+            // Create bullets based on shot level
+            val newBullets = when (it.shotLevel) {
+                3 -> listOf(
+                    Bullet(position = it.player.position.copy(x = it.player.position.x - 20f)),
+                    Bullet(position = it.player.position),
+                    Bullet(position = it.player.position.copy(x = it.player.position.x + 20f))
+                )
+                2 -> listOf(
+                    Bullet(position = it.player.position.copy(x = it.player.position.x - 10f)),
+                    Bullet(position = it.player.position.copy(x = it.player.position.x + 10f))
+                )
+                else -> listOf(Bullet(position = it.player.position))
+            }
             
             // Play shoot sound and vibrate
             soundManager.playSound(SoundManager.SFX_SHOOT)
@@ -596,10 +1174,30 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             val muzzleParticles = createMuzzleFlashParticles(it.player.position, currentTime)
             
             it.copy(
-                bullets = it.bullets + newBullet,
+                bullets = it.bullets + newBullets,
                 particles = it.particles + muzzleParticles
             )
         }
+    }
+    
+    // Start auto-fire mode
+    fun startAutoFire() {
+        if (autoFireJob?.isActive == true) return
+        
+        _gameState.update { it.copy(isAutoFiring = true) }
+        
+        autoFireJob = viewModelScope.launch {
+            while (_gameState.value.isAutoFiring && !_gameState.value.isGameOver && !_gameState.value.isPaused) {
+                shoot()
+                delay(autoFireInterval)
+            }
+        }
+    }
+    
+    // Stop auto-fire mode
+    fun stopAutoFire() {
+        autoFireJob?.cancel()
+        _gameState.update { it.copy(isAutoFiring = false) }
     }
 
     // Update screen dimensions
@@ -617,20 +1215,36 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             // Pause/resume BGM
             if (newPaused) {
                 soundManager.pauseBGM()
+                autoFireJob?.cancel()
             } else {
                 soundManager.resumeBGM()
             }
             
-            it.copy(isPaused = newPaused)
+            it.copy(isPaused = newPaused, isAutoFiring = false)
         }
     }
 
     // 게임 재시작
     fun restartGame() {
         gameLoopJob?.cancel()
-        _gameState.value = createInitialState()
-        soundManager.playBGM()
-        startGameLoop()
+        autoFireJob?.cancel()
+        
+        // Reload difficulty settings
+        viewModelScope.launch {
+            val difficultyName = settingsDataStore.difficulty.first()
+            currentDifficulty = try {
+                Difficulty.valueOf(difficultyName)
+            } catch (e: Exception) {
+                Difficulty.NORMAL
+            }
+            difficultySpeedMultiplier = currentDifficulty.speedMultiplier
+            difficultyShootMultiplier = currentDifficulty.shootFrequencyMultiplier
+            powerUpDropRate = currentDifficulty.powerUpDropRate
+            
+            _gameState.value = createInitialState()
+            soundManager.playBGM()
+            startGameLoop()
+        }
     }
 
     private fun createInitialState(): GameState {
@@ -641,20 +1255,33 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
             bullets = emptyList(),
             enemyBullets = emptyList(),
             score = 0,
-            lives = 3,
+            lives = currentDifficulty.startingLives,
             isGameOver = false,
             currentWave = 1,
             isPaused = false,
             formationPattern = initialPattern,
             stars = createStars(),
             explosions = emptyList(),
-            particles = emptyList()
+            particles = emptyList(),
+            floatingTexts = emptyList(),
+            powerUps = emptyList(),
+            activePowerUps = emptyMap(),
+            shotLevel = 1,
+            hasShield = false,
+            playerSpeed = 1.0f,
+            stageBoss = null,
+            bossBullets = emptyList(),
+            isBossWave = false,
+            bossWarning = false,
+            combo = ComboInfo(),
+            perfectWave = true
         )
     }
 
     override fun onCleared() {
         super.onCleared()
         gameLoopJob?.cancel()
+        autoFireJob?.cancel()
         soundManager.release()
     }
 
