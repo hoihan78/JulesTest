@@ -3,6 +3,7 @@ package fastcampus.part2.myapplication.ui.game
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,6 +37,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.text.TextStyle
@@ -45,20 +47,26 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawBeeEnemy
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawBossEnemy
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawBossBullet
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawBossHealthBar
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawButterflyEnemy
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawEnemyBullet
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawExplosion
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawParticle
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawPlayerBullet
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawPlayerSpaceship
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawPowerUp
+import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawStageBoss
 import fastcampus.part2.myapplication.ui.game.SpriteRenderer.drawStar
 import kotlinx.coroutines.delay
+import kotlin.math.sin
 
 // Neon text style for UI
 private val neonGreen = Color(0xFF39FF14)
 private val neonCyan = Color(0xFF00D9FF)
 private val neonRed = Color(0xFFFF5555)
 private val neonYellow = Color(0xFFFFEE00)
+private val neonPurple = Color(0xFF9D4EDD)
 
 @Composable
 fun GameScreen(
@@ -94,56 +102,107 @@ fun GameScreen(
                 gameViewModel.updateScreenSize(size.width.toFloat(), size.height.toFloat())
             }
     ) {
+        // Calculate screen shake offset
+        val shakeOffset = if (gameState.screenShake.intensity > 0) {
+            val time = currentTime.longValue
+            Offset(
+                (sin(time * 0.1f) * gameState.screenShake.intensity).toFloat(),
+                (sin(time * 0.13f) * gameState.screenShake.intensity).toFloat()
+            )
+        } else {
+            Offset.Zero
+        }
+        
         Canvas(modifier = Modifier
             .fillMaxSize()
             .pointerInput(Unit) {
-                detectDragGestures { change, dragAmount ->
-                    change.consume()
-                    gameViewModel.movePlayer(dragAmount.x)
-                }
+                detectDragGestures(
+                    onDragStart = { },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        gameViewModel.movePlayer(dragAmount.x)
+                    },
+                    onDragEnd = { }
+                )
+            }
+            .pointerInput(Unit) {
+                // Long press for auto-fire
+                detectTapGestures(
+                    onPress = {
+                        gameViewModel.startAutoFire()
+                        tryAwaitRelease()
+                        gameViewModel.stopAutoFire()
+                    },
+                    onTap = {
+                        gameViewModel.shoot()
+                    }
+                )
             }
         ) {
             val time = currentTime.longValue
+            val screenWidth = size.width
             
-            // ===== Layer 1: Background Stars =====
-            gameState.stars.forEach { star ->
-                drawStar(star)
-            }
-            
-            // ===== Layer 2: Particles (behind entities) =====
-            gameState.particles.forEach { particle ->
-                drawParticle(particle, time)
-            }
-            
-            // ===== Layer 3: Player Bullets =====
-            gameState.bullets.forEach { bullet ->
-                drawPlayerBullet(bullet.position, time)
-            }
-            
-            // ===== Layer 4: Enemy Bullets =====
-            gameState.enemyBullets.forEach { bullet ->
-                drawEnemyBullet(bullet.position, time)
-            }
-            
-            // ===== Layer 5: Enemies =====
-            gameState.enemies.forEach { enemy ->
-                when (enemy.type) {
-                    EnemyType.BEE -> drawBeeEnemy(enemy.position, enemy.animationPhase)
-                    EnemyType.BUTTERFLY -> drawButterflyEnemy(enemy.position, enemy.animationPhase)
-                    EnemyType.BOSS -> drawBossEnemy(enemy.position, enemy.animationPhase, enemy.health)
+            // Apply screen shake
+            withTransform({
+                translate(shakeOffset.x, shakeOffset.y)
+            }) {
+                // ===== Layer 1: Background Stars =====
+                gameState.stars.forEach { star ->
+                    drawStar(star)
                 }
-            }
-            
-            // ===== Layer 6: Player Spaceship =====
-            drawPlayerSpaceship(
-                position = gameState.player.position,
-                isInvincible = gameState.player.isInvincible,
-                time = time
-            )
-            
-            // ===== Layer 7: Explosions (on top) =====
-            gameState.explosions.forEach { explosion ->
-                drawExplosion(explosion, time)
+                
+                // ===== Layer 2: Particles (behind entities) =====
+                gameState.particles.forEach { particle ->
+                    drawParticle(particle, time)
+                }
+                
+                // ===== Layer 3: Power-ups =====
+                gameState.powerUps.forEach { powerUp ->
+                    drawPowerUp(powerUp, time)
+                }
+                
+                // ===== Layer 4: Player Bullets =====
+                gameState.bullets.forEach { bullet ->
+                    drawPlayerBullet(bullet.position, time)
+                }
+                
+                // ===== Layer 5: Enemy Bullets =====
+                gameState.enemyBullets.forEach { bullet ->
+                    drawEnemyBullet(bullet.position, time)
+                }
+                
+                // ===== Layer 6: Boss Bullets =====
+                gameState.bossBullets.forEach { bullet ->
+                    drawBossBullet(bullet, time)
+                }
+                
+                // ===== Layer 7: Enemies =====
+                gameState.enemies.forEach { enemy ->
+                    when (enemy.type) {
+                        EnemyType.BEE -> drawBeeEnemy(enemy.position, enemy.animationPhase)
+                        EnemyType.BUTTERFLY -> drawButterflyEnemy(enemy.position, enemy.animationPhase)
+                        EnemyType.BOSS -> drawBossEnemy(enemy.position, enemy.animationPhase, enemy.health)
+                    }
+                }
+                
+                // ===== Layer 8: Stage Boss =====
+                gameState.stageBoss?.let { boss ->
+                    drawStageBoss(boss, time)
+                    drawBossHealthBar(boss, screenWidth, time)
+                }
+                
+                // ===== Layer 9: Player Spaceship =====
+                drawPlayerSpaceship(
+                    position = gameState.player.position,
+                    isInvincible = gameState.player.isInvincible,
+                    hasShield = gameState.hasShield,
+                    time = time
+                )
+                
+                // ===== Layer 10: Explosions (on top) =====
+                gameState.explosions.forEach { explosion ->
+                    drawExplosion(explosion, time)
+                }
             }
         }
 
@@ -207,18 +266,42 @@ fun GameScreen(
                         )
                     }
                 }
+                
+                // Active power-ups indicator
+                if (gameState.activePowerUps.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row {
+                        gameState.activePowerUps.forEach { (type, _) ->
+                            val icon = when (type) {
+                                PowerUpType.DOUBLE_SHOT -> "🔫🔫"
+                                PowerUpType.TRIPLE_SHOT -> "🔫🔫🔫"
+                                PowerUpType.SHIELD -> "🛡️"
+                                PowerUpType.SPEED_UP -> "⚡"
+                                PowerUpType.EXTRA_LIFE -> ""
+                            }
+                            if (icon.isNotEmpty()) {
+                                Text(
+                                    text = icon,
+                                    fontSize = 12.sp,
+                                    modifier = Modifier.padding(end = 4.dp)
+                                )
+                            }
+                        }
+                    }
+                }
             }
             
             Column(horizontalAlignment = Alignment.End) {
                 // Wave indicator with neon effect
+                val waveColor = if (gameState.isBossWave) neonRed else neonCyan
                 Text(
-                    text = "WAVE ${gameState.currentWave}",
+                    text = if (gameState.isBossWave) "⚠️ BOSS WAVE ${gameState.currentWave}" else "WAVE ${gameState.currentWave}",
                     style = TextStyle(
-                        color = neonCyan,
+                        color = waveColor,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.Bold,
                         shadow = Shadow(
-                            color = neonCyan.copy(alpha = 0.7f),
+                            color = waveColor.copy(alpha = 0.7f),
                             offset = Offset(0f, 0f),
                             blurRadius = 12f
                         )
@@ -239,8 +322,101 @@ fun GameScreen(
                 }
             }
         }
+        
+        // Combo display
+        if (gameState.combo.count >= 2 && currentTime.longValue < gameState.combo.displayUntil) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 120.dp)
+            ) {
+                Text(
+                    text = "${gameState.combo.count}x COMBO!",
+                    style = TextStyle(
+                        color = neonYellow,
+                        fontSize = 32.sp,
+                        fontWeight = FontWeight.Bold,
+                        shadow = Shadow(
+                            color = neonYellow.copy(alpha = 0.8f),
+                            offset = Offset(0f, 0f),
+                            blurRadius = 15f
+                        )
+                    )
+                )
+            }
+        }
+        
+        // Floating texts (bonus points, power-up names)
+        gameState.floatingTexts.forEach { floatingText ->
+            val progress = (currentTime.longValue - floatingText.createdAt).toFloat() / floatingText.duration
+            if (progress < 1f) {
+                val alpha = 1f - progress
+                val yOffset = progress * 50f
+                
+                // Position relative to game area
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                ) {
+                    Text(
+                        text = floatingText.text,
+                        style = TextStyle(
+                            color = floatingText.color.copy(alpha = alpha),
+                            fontSize = floatingText.fontSize.sp,
+                            fontWeight = FontWeight.Bold,
+                            shadow = Shadow(
+                                color = floatingText.color.copy(alpha = alpha * 0.7f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 10f
+                            )
+                        ),
+                        modifier = Modifier.align(Alignment.Center)
+                    )
+                }
+            }
+        }
+        
+        // Boss Warning Overlay
+        if (gameState.bossWarning) {
+            val warningAlpha = (sin(currentTime.longValue * 0.01f) * 0.3f + 0.5f).toFloat()
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(neonRed.copy(alpha = warningAlpha * 0.2f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "⚠️ WARNING ⚠️",
+                        style = TextStyle(
+                            color = neonRed,
+                            fontSize = 48.sp,
+                            fontWeight = FontWeight.Bold,
+                            shadow = Shadow(
+                                color = neonRed.copy(alpha = 0.9f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 25f
+                            )
+                        )
+                    )
+                    Text(
+                        text = "BOSS APPROACHING",
+                        style = TextStyle(
+                            color = neonYellow,
+                            fontSize = 28.sp,
+                            fontWeight = FontWeight.Bold,
+                            shadow = Shadow(
+                                color = neonYellow.copy(alpha = 0.8f),
+                                offset = Offset(0f, 0f),
+                                blurRadius = 15f
+                            )
+                        )
+                    )
+                }
+            }
+        }
 
-        // Fire button
+        // Fire button with auto-fire indicator
         Button(
             onClick = { gameViewModel.shoot() },
             modifier = Modifier
@@ -248,16 +424,17 @@ fun GameScreen(
                 .padding(16.dp)
                 .size(80.dp),
             colors = ButtonDefaults.buttonColors(
-                containerColor = neonCyan.copy(alpha = 0.9f)
+                containerColor = if (gameState.isAutoFiring) neonYellow.copy(alpha = 0.9f) 
+                               else neonCyan.copy(alpha = 0.9f)
             ),
             shape = CircleShape,
             enabled = !gameState.isPaused && !gameState.isGameOver
         ) {
             Text(
-                "FIRE",
+                text = if (gameState.isAutoFiring) "AUTO" else "FIRE",
                 color = Color.Black,
                 fontWeight = FontWeight.Bold,
-                fontSize = 14.sp
+                fontSize = 12.sp
             )
         }
 
@@ -322,7 +499,7 @@ fun GameScreen(
                         Text("  RESUME", color = Color.Black, fontWeight = FontWeight.Bold)
                     }
                     
-                    // Settings button (placeholder - could navigate to settings)
+                    // Settings button
                     Button(
                         onClick = { /* Could open in-game settings */ },
                         colors = ButtonDefaults.buttonColors(
@@ -412,6 +589,23 @@ fun GameScreen(
                             )
                         )
                     )
+                    
+                    // Show max combo
+                    if (gameState.combo.count >= 2) {
+                        Text(
+                            text = "Best Combo: ${gameState.combo.count}x",
+                            style = TextStyle(
+                                color = neonPurple,
+                                fontSize = 18.sp,
+                                shadow = Shadow(
+                                    color = neonPurple.copy(alpha = 0.5f),
+                                    offset = Offset(0f, 0f),
+                                    blurRadius = 8f
+                                )
+                            )
+                        )
+                    }
+                    
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(20.dp),
                         modifier = Modifier.padding(top = 16.dp)
