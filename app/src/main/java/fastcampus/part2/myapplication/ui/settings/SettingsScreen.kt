@@ -53,6 +53,7 @@ import kotlinx.coroutines.launch
 private val neonCyan = Color(0xFF00D9FF)
 private val neonGreen = Color(0xFF39FF14)
 private val neonYellow = Color(0xFFFFEE00)
+private val neonRed = Color(0xFFFF0055)
 private val darkBackground = Color(0xFF0A0E27)
 
 @Composable
@@ -277,18 +278,28 @@ private fun DifficultyOption(
     isSelected: Boolean,
     onSelect: () -> Unit
 ) {
+    val difficultyColor = when (difficulty) {
+        Difficulty.EASY -> neonGreen
+        Difficulty.NORMAL -> neonYellow
+        Difficulty.HARD -> neonRed
+    }
+    
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(
+                if (isSelected) difficultyColor.copy(alpha = 0.1f) else Color.Transparent,
+                RoundedCornerShape(8.dp)
+            )
             .clickable { onSelect() }
-            .padding(vertical = 8.dp),
+            .padding(vertical = 12.dp, horizontal = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         RadioButton(
             selected = isSelected,
             onClick = onSelect,
             colors = RadioButtonDefaults.colors(
-                selectedColor = neonYellow,
+                selectedColor = difficultyColor,
                 unselectedColor = Color.Gray
             )
         )
@@ -296,18 +307,18 @@ private fun DifficultyOption(
         Column {
             Text(
                 text = difficulty.displayName,
-                color = if (isSelected) neonYellow else Color.White,
-                fontSize = 16.sp,
+                color = if (isSelected) difficultyColor else Color.White,
+                fontSize = 18.sp,
                 fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal
             )
             Text(
                 text = when (difficulty) {
-                    Difficulty.EASY -> "적 속도 70%, 발사 빈도 60%"
-                    Difficulty.NORMAL -> "기본 난이도"
-                    Difficulty.HARD -> "적 속도 130%, 발사 빈도 140%"
+                    Difficulty.EASY -> "생명 5개 • 적 속도 70% • 총알 50% • 파워업 15%"
+                    Difficulty.NORMAL -> "생명 3개 • 기본 난이도 • 파워업 10%"
+                    Difficulty.HARD -> "생명 2개 • 적 속도 130% • 총알 200% • 파워업 5%"
                 },
                 color = Color.Gray,
-                fontSize = 12.sp
+                fontSize = 11.sp
             )
         }
     }
