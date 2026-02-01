@@ -1,13 +1,18 @@
 package fastcampus.part2.myapplication.ui.game
 
+import android.app.Application
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import fastcampus.part2.myapplication.data.Difficulty
+import fastcampus.part2.myapplication.data.SettingsDataStore
+import fastcampus.part2.myapplication.sound.SoundManager
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlin.math.cos
@@ -15,9 +20,13 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import kotlin.random.Random
 
-class GameViewModel : ViewModel() {
+class GameViewModel(application: Application) : AndroidViewModel(application) {
     private val _gameState = MutableStateFlow(createInitialState())
     val gameState: StateFlow<GameState> = _gameState
+
+    // Sound and settings
+    private val soundManager = SoundManager(application)
+    private val settingsDataStore = SettingsDataStore(application)
 
     private var gameLoopJob: Job? = null
     private var lastUpdateTime = System.currentTimeMillis()
@@ -28,6 +37,10 @@ class GameViewModel : ViewModel() {
     private val baseShootInterval = 2000L  // 2초
     private val speedIncreasePerWave = 0.05f  // 웨이브당 5% 속도 증가
     private val shootFrequencyIncreasePerWave = 0.10f  // 웨이브당 10% 발사 빈도 증가
+
+    // Difficulty multipliers (updated from settings)
+    private var difficultySpeedMultiplier = 1.0f
+    private var difficultyShootMultiplier = 1.0f
 
     // Screen dimensions (will be updated)
     private var screenWidth = 800f
@@ -51,7 +64,54 @@ class GameViewModel : ViewModel() {
     )
 
     init {
+        // Load settings
+        viewModelScope.launch {
+            loadSettings()
+        }
         startGameLoop()
+    }
+
+    private suspend fun loadSettings() {
+        // Load sound settings
+        val soundEnabled = settingsDataStore.isSoundEnabled.first()
+        val musicEnabled = settingsDataStore.isMusicEnabled.first()
+        val vibrationEnabled = settingsDataStore.isVibrationEnabled.first()
+        soundManager.updateSettings(soundEnabled, musicEnabled, vibrationEnabled)
+
+        // Load difficulty
+        val difficultyName = settingsDataStore.difficulty.first()
+        val difficulty = try {
+            Difficulty.valueOf(difficultyName)
+        } catch (e: Exception) {
+            Difficulty.NORMAL
+        }
+        difficultySpeedMultiplier = difficulty.speedMultiplier
+        difficultyShootMultiplier = difficulty.shootFrequencyMultiplier
+
+        // Start BGM
+        soundManager.playBGM()
+        
+        // Observe settings changes
+        viewModelScope.launch {
+            settingsDataStore.isSoundEnabled.collect { enabled ->
+                soundManager.isSoundEnabled = enabled
+            }
+        }
+        viewModelScope.launch {
+            settingsDataStore.isMusicEnabled.collect { enabled ->
+                if (enabled) {
+                    soundManager.resumeBGM()
+                } else {
+                    soundManager.pauseBGM()
+                }
+                soundManager.isMusicEnabled = enabled
+            }
+        }
+        viewModelScope.launch {
+            settingsDataStore.isVibrationEnabled.collect { enabled ->
+                soundManager.isVibrationEnabled = enabled
+            }
+        }
     }
 
     private fun startGameLoop() {
@@ -73,9 +133,12 @@ class GameViewModel : ViewModel() {
             if (currentState.isGameOver || currentState.isPaused) return@update currentState
 
             val wave = currentState.currentWave
-            val speedMultiplier = 1f + (wave - 1) * speedIncreasePerWave
-            val shootIntervalMultiplier = 1f - (wave - 1) * shootFrequencyIncreasePerWave
-            val adjustedShootInterval = (baseShootInterval * shootIntervalMultiplier.coerceAtLeast(0.3f)).toLong()
+            val waveSpeedMultiplier = 1f + (wave - 1) * speedIncreasePerWave
+            val speedMultiplier = waveSpeedMultiplier * difficultySpeedMultiplier
+            
+            val waveShootMultiplier = 1f - (wave - 1) * shootFrequencyIncreasePerWave
+            val shootIntervalMultiplier = (waveShootMultiplier / difficultyShootMultiplier).coerceAtLeast(0.3f)
+            val adjustedShootInterval = (baseShootInterval * shootIntervalMultiplier).toLong()
 
             // ===== Update Stars (Background Scroll) =====
             val updatedStars = currentState.stars.map { star ->
@@ -174,6 +237,10 @@ class GameViewModel : ViewModel() {
                             enemiesToRemove.add(enemy)
                             score += enemy.type.points
                             
+                            // Play explosion sound
+                            soundManager.playSound(SoundManager.SFX_EXPLOSION)
+                            soundManager.vibrate(SoundManager.VibrationType.EXPLOSION)
+                            
                             // Create explosion at enemy position
                             newExplosions.add(
                                 Explosion(
@@ -224,6 +291,11 @@ class GameViewModel : ViewModel() {
                         isInvincible = true,
                         invincibleUntil = currentTime + invincibilityDuration
                     )
+                    
+                    // Play hit sound
+                    soundManager.playSound(SoundManager.SFX_HIT)
+                    soundManager.vibrate(SoundManager.VibrationType.HIT)
+                    
                     // Add explosion at player position
                     newExplosions.add(
                         Explosion(
@@ -249,6 +321,11 @@ class GameViewModel : ViewModel() {
                         isInvincible = true,
                         invincibleUntil = currentTime + invincibilityDuration
                     )
+                    
+                    // Play hit sound
+                    soundManager.playSound(SoundManager.SFX_HIT)
+                    soundManager.vibrate(SoundManager.VibrationType.HIT)
+                    
                     // Add hit effect
                     newExplosions.add(
                         Explosion(
@@ -271,11 +348,17 @@ class GameViewModel : ViewModel() {
                 newWave = wave + 1
                 newFormation = FormationPattern.entries[(newWave - 1) % FormationPattern.entries.size]
                 remainingEnemies.addAll(createWaveEnemies(newWave, newFormation))
+                
+                // Play level up sound
+                soundManager.playSound(SoundManager.SFX_LEVELUP)
             }
 
             val isGameOver = lives <= 0
             if (isGameOver) {
                 gameLoopJob?.cancel()
+                soundManager.playSound(SoundManager.SFX_GAMEOVER)
+                soundManager.vibrate(SoundManager.VibrationType.GAMEOVER)
+                soundManager.stopBGM()
             }
 
             currentState.copy(
@@ -505,6 +588,10 @@ class GameViewModel : ViewModel() {
             if (it.isPaused || it.isGameOver) return@update it
             val newBullet = Bullet(position = it.player.position)
             
+            // Play shoot sound and vibrate
+            soundManager.playSound(SoundManager.SFX_SHOOT)
+            soundManager.vibrate(SoundManager.VibrationType.SHOOT)
+            
             // Add muzzle flash particles
             val muzzleParticles = createMuzzleFlashParticles(it.player.position, currentTime)
             
@@ -525,7 +612,16 @@ class GameViewModel : ViewModel() {
     fun togglePause() {
         _gameState.update {
             if (it.isGameOver) return@update it
-            it.copy(isPaused = !it.isPaused)
+            val newPaused = !it.isPaused
+            
+            // Pause/resume BGM
+            if (newPaused) {
+                soundManager.pauseBGM()
+            } else {
+                soundManager.resumeBGM()
+            }
+            
+            it.copy(isPaused = newPaused)
         }
     }
 
@@ -533,6 +629,7 @@ class GameViewModel : ViewModel() {
     fun restartGame() {
         gameLoopJob?.cancel()
         _gameState.value = createInitialState()
+        soundManager.playBGM()
         startGameLoop()
     }
 
@@ -558,6 +655,7 @@ class GameViewModel : ViewModel() {
     override fun onCleared() {
         super.onCleared()
         gameLoopJob?.cancel()
+        soundManager.release()
     }
 
     private fun Offset.getDistance(other: Offset): Float {
