@@ -120,7 +120,7 @@ fun GameScreen(
                     onDragStart = { },
                     onDrag = { change, dragAmount ->
                         change.consume()
-                        gameViewModel.movePlayer(dragAmount.x)
+                        gameViewModel.movePlayer(dragAmount)
                     },
                     onDragEnd = { }
                 )

@@ -1134,14 +1134,23 @@ class GameViewModel(application: Application) : AndroidViewModel(application) {
         return enemies
     }
 
-    fun movePlayer(delta: Float) {
+    fun movePlayer(delta: Offset) {
         _gameState.update {
             if (it.isPaused) return@update it
             val speedMultiplier = it.playerSpeed
-            val newPosition = it.player.position.x + delta * speedMultiplier
+            val newX = it.player.position.x + delta.x * speedMultiplier
+            val newY = it.player.position.y + delta.y * speedMultiplier
+            
+            // Y축 이동 제한 (화면 하단 25% 영역만 허용)
+            val minY = screenHeight * 0.75f
+            val maxY = screenHeight - 100f
+
             it.copy(
                 player = it.player.copy(
-                    position = it.player.position.copy(x = newPosition.coerceIn(30f, screenWidth - 30f))
+                    position = Offset(
+                        x = newX.coerceIn(30f, screenWidth - 30f),
+                        y = newY.coerceIn(minY, maxY)
+                    )
                 )
             )
         }
